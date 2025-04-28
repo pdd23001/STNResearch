@@ -7,16 +7,16 @@ from hashlib import sha256
 # -------------------------------
 
 x_basis_factor = 0.4
-z_input = int(10e6)
+z_input = int(10e8)
 x_input = int(x_basis_factor * z_input)
 flip_prob = 0.05
 
 # Generate raw keys for Z and X bases
-a_z = random.randint(2, size=z_input)   
-b_z = random.randint(2, size=z_input)   
+a_z = random.randint(2,size=z_input, dtype=np.uint8) # Alice's raw key
+b_z = random.randint(2, size=z_input, dtype=np.uint8) # Bob's raw key
 
-a_x = random.randint(2, size=x_input)
-b_x = random.randint(2, size=x_input)
+a_x = random.randint(2, size=x_input, dtype=np.uint8)
+b_x = random.randint(2, size=x_input, dtype=np.uint8)
 
 # Simulate transmission with noise (bit flips)
 t_z_a = np.where(random.rand(z_input) < flip_prob, 1 - a_z, a_z)
@@ -35,7 +35,6 @@ final_x = np.bitwise_xor(xored_x, b_x)
 # -------------------------------
 # QBER Calculation for X Basis
 # -------------------------------
-
 error_count = np.sum(a_x != final_x)
 qber = error_count / x_input
 print("Initial X-Basis QBER: ", qber)
@@ -44,9 +43,19 @@ print("Initial X-Basis QBER: ", qber)
 # Cascade Error Correction on Z basis (Multi-Iteration with Shuffling)
 # -------------------------------
 
+# Initialize global variables for communication rounds
+alice_msgs = 0
+
 def parity(bits):
     """Helper: Compute parity of a bit block. This function is carried out by Alice (the server)"""
     return np.sum(bits) % 2
+
+def bin_search_alice_parity(bits):
+    "Function for rounds of communication help"
+    global alice_msgs
+    alice_msgs += 1  
+    return parity(bits)      
+
 
 def binary_search_and_fix(a, b, indices):
     """Binary search to locate and fix an error in a block"""
@@ -55,7 +64,7 @@ def binary_search_and_fix(a, b, indices):
     while start < end:
         mid = (start + end) // 2
         # Check parity of the first half of the block indices
-        if parity(a[indices[start:mid+1]]) != parity(b[indices[start:mid+1]]):
+        if bin_search_alice_parity(a[indices[start:mid+1]]) != parity(b[indices[start:mid+1]]):
             end = mid
         else:
             start = mid + 1
@@ -93,6 +102,7 @@ def cascade_iteration(a_key, b_key, block_size, use_permutation=False):
     else:
         # No permutation: work on the keys directly
         corrected = cascade_correction_iteration(a_key, b_key, block_size)
+    
     return corrected
 
 def cascade_full_correction(a_key, b_key, block_sizes, use_permutation=True):
@@ -103,6 +113,7 @@ def cascade_full_correction(a_key, b_key, block_sizes, use_permutation=True):
             corrected = cascade_iteration(a_key, corrected, block_size, use_permutation=False)
         else:
             corrected = cascade_iteration(a_key, corrected, block_size, use_permutation)
+        print(f"Error Rate After Iteration with Block Size {block_size}: {np.sum(corrected != a_key) / len(a_key)}")
     return corrected
 
 # Define a list of block sizes for successive iterations (you can adjust these values)
@@ -111,6 +122,9 @@ def cascade_full_correction(a_key, b_key, block_sizes, use_permutation=True):
 first_block_size = int(0.73 / qber) # From cascade documentation.
 num_iterations = 7                  # can be modified as per needs (original cascade uses 4)
 block_sizes = [int(2**i) * first_block_size for i in range(num_iterations)] 
+
+alice_msgs += num_iterations
+bob_msgs = num_iterations - 1
 
 # Apply multi-iteration Cascade on the Z basis
 corrected_z = cascade_full_correction(a_z, final_z, block_sizes, use_permutation=True)
@@ -123,6 +137,8 @@ corrected_z = cascade_full_correction(a_z, final_z, block_sizes, use_permutation
 errors_after = np.sum(corrected_z != a_z)
 error_rate_after = errors_after / z_input
 print("Z-Basis Error Rate After Multi-Iteration Cascade: ", error_rate_after)
+print("Total Alice Messages Sent: ", alice_msgs)
+print("Total Bob Messages Sent: ", bob_msgs)
 
 #Another way to confirm that the reconcilliated key and the original key are the same (Using Hashing). We can send hashes over public channels
 hash_a_z = sha256(a_z.tobytes()).hexdigest()
